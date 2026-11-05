@@ -1,0 +1,10 @@
+{
+  "name": "centro-control",
+  "version": "0.1.0",
+  "description": "Mini centro de control: tokens, limites, contexto, agentes, tareas, resumen, alertas y mejorador de prompt.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "b41r0nn"
+  },
+  "license": "MIT"
+}

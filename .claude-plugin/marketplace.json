@@ -1,0 +1,13 @@
+{
+  "name": "centro-control",
+  "owner": {
+    "name": "b41r0nn"
+  },
+  "plugins": [
+    {
+      "name": "centro-control",
+      "source": "./"
+    }
+  ],
+  "description": "El mod centro-control para Claude Code: un panel con uso, limites, contexto, agentes, tareas, alertas y mejorador de prompt."
+}
