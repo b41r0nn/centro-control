@@ -51,6 +51,25 @@ con `b41r0nn/centro-control`, y despues Add plugin.
 
 Queda activo en esa misma sesion, y en cada sesion que empiece despues.
 
+## Limitaciones de lo que se puede saber de un agente
+
+La API no expone progreso de un subagente, asi que el panel lo reconstruye
+escuchando eventos. Lo que eso implica:
+
+- **`AgentInfo` no trae ningun timestamp.** El "desde cuando" que guarda el mod
+  es cuando el panel vio al agente por primera vez, no cuando arranco de verdad.
+- **Las filas se van de `$.agent.list()` pocos segundos despues de terminar.**
+  El mod conserva las que oyo terminar (su `turn.complete`), para que la barra
+  de progreso no retroceda justo al acabar el trabajo. Una fila que desaparece
+  sin que se oyera su final se suelta, en vez de inventarle un desenlace.
+- **Un agente que lance este mod con `$.agent.spawn` no emitiria eventos a sus
+  propios hooks** (la regla de no reentrada del motor). El mod no lanza agentes,
+  asi que no le afecta: ve los que lanza el modelo o la persona.
+- **Los agentes de un workflow no aparecen en la lista**, aunque sus eventos
+  lleven `agentId`.
+- El `mode` del Spinner (pensando, consultando, usando una herramienta) solo
+  existe en las superficies terminal, desktop y vscode.
+
 ## Requisitos
 
 Claude Code 2.1.318 o cercano. Los function hooks son early access y su API cambia

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-const SHAPE = 'cc-1'
+const SHAPE = 'cc-2'
 
 const PANE = {
   plugin: 'centro-control',
@@ -105,6 +105,112 @@ test('el panel muestra los porcentajes que midio el motor', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /\$0\.4231/ })).toBeDefined()
   // La barra de 92% va en rojo y la de 18% en verde: la jerarquia de estados.
   expect(await ui.find({ type: 'Text', text: /█/ })).toBeDefined()
+  await ui.unmount()
+})
+
+const WIDE = { ...PANE, props: { ...PANE.props, bodyColumns: 80 } } as const
+
+test('la actividad explica en una frase lo que se esta haciendo', async ($, on) => {
+  on('clock.now', () => ({ value: 1_700_000_000_000 }))
+  on('tool.call', () => ({ result: {} }))
+
+  await $.tool.call({
+    tool: 'Edit',
+    file_path: 'C:/Users/x/repos/centro-control/hooks/register.tsx',
+    old_string: 'a',
+    new_string: 'b',
+  })
+
+  const ui = await $.ui.mount({ ...WIDE, surface: 'terminal' })
+
+  // La explicacion, legible, y debajo la herramienta cruda con su argumento.
+  expect(await ui.find({ type: 'Text', text: /Editando register\.tsx/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Edit: / })).toBeDefined()
+  await ui.unmount()
+})
+
+test('una busqueda se explica por su patron, no por su carpeta', async ($, on) => {
+  on('clock.now', () => ({ value: 1_700_000_000_000 }))
+  on('tool.call', () => ({ result: {} }))
+
+  // Grep lleva `pattern` y tambien `path`: lo que identifica la llamada es el
+  // patron. Si se leyera `path` primero, la frase diria la carpeta.
+  await $.tool.call({ tool: 'Grep', pattern: 'AgentInfo', path: 'C:/Users/x/repos' })
+
+  const ui = await $.ui.mount({ ...WIDE, surface: 'terminal' })
+
+  expect(await ui.find({ type: 'Text', text: /Buscando "AgentInfo"/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Buscando "C:/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('dos agentes se ven con su estado y lo que cada uno hace', async ($, on) => {
+  const seed: Record<string, unknown> = {
+    activity: {
+      shape: SHAPE,
+      value: {
+        isRunning: true,
+        turnId: 't1',
+        prompt: 'muestra una explicacion de la actividad',
+        doing: 'Editando register.tsx',
+        startedAt: 1_700_000_000_000,
+        endedAt: 0,
+        tools: 14,
+        lastTool: 'Edit',
+        lastDetail: 'hooks/register.tsx',
+        lastAt: 1_700_000_060_000,
+      },
+    },
+    agents: {
+      shape: SHAPE,
+      value: [
+        {
+          id: 'a1',
+          name: 'Explore',
+          type: 'Explore',
+          status: 'running',
+          mode: 'tool-use',
+          description: 'Investigar datos de agentes en vivo',
+          tools: 8,
+          lastTool: 'Grep',
+          lastDetail: 'AgentInfo',
+          startedAt: 1_700_000_000_000,
+          endedAt: 0,
+        },
+        {
+          id: 'a2',
+          name: '',
+          type: 'Explore',
+          status: 'completed',
+          mode: '',
+          description: 'Extraer nombres reales de herramientas',
+          tools: 12,
+          lastTool: 'Read',
+          lastDetail: 'claude-code.d.ts',
+          startedAt: 1_700_000_000_000,
+          endedAt: 1_700_000_115_000,
+        },
+      ],
+    },
+  }
+  on('state.get', (_, e) => ({
+    value: { value: seed[e.key], version: seed[e.key] === undefined ? 0 : 1 },
+  }))
+
+  const ui = await $.ui.mount({ ...WIDE, surface: 'terminal' })
+
+  // El progreso: uno de dos terminado.
+  expect(await ui.find({ type: 'Text', text: /1\/2/ })).toBeDefined()
+  // El que corre: su estado y lo que esta haciendo ahora, no su tarea.
+  expect(await ui.find({ type: 'Text', text: /Explore/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /running/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /8t Buscando "AgentInfo"/ })).toBeDefined()
+  // El que termino: vuelve a mostrar cual era su tarea.
+  expect(await ui.find({ type: 'Text', text: /completed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /12t Extraer nombres reales/ })).toBeDefined()
+  // Y la actividad del hilo principal, con su explicacion.
+  expect(await ui.find({ type: 'Text', text: /Editando register\.tsx/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /14 herramientas/ })).toBeDefined()
   await ui.unmount()
 })
 

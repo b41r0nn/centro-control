@@ -57,12 +57,22 @@ export type CtlAgent = {
   type: string
   /** Donde esta su loop: pending, running, waiting, idle, completed, failed, killed. */
   status: string
+  /**
+   * Lo que su turno esta haciendo, segun el `mode` del Spinner que el motor
+   * dibuja para el: thinking, requesting, tool-input, tool-use, responding.
+   *
+   * Vacio donde no lo sabemos: el motor solo levanta ese componente en las
+   * superficies terminal, desktop y vscode.
+   */
+  mode: string
   /** La descripcion corta de la tarea. */
   description: string
   /** Llamadas a herramientas que se le han contado en esta carga del mod. */
   tools: number
   /** Ultima herramienta que uso. */
   lastTool: string
+  /** Detalle corto de esa herramienta (comando, archivo), para explicarla. */
+  lastDetail: string
   /** Cuando se le vio por primera vez, en ms. */
   startedAt: number
   /** Cuando termino, en ms; 0 mientras sigue. */
@@ -77,6 +87,14 @@ export type CtlActivity = {
   turnId: string
   /** Comienzo del prompt que arranco el turno. */
   prompt: string
+  /**
+   * Una frase corta en espanol de lo que se esta haciendo ahora, derivada de la
+   * herramienta en curso y su argumento ("Editando register.tsx").
+   *
+   * Se calcula en el mod, sin llamar al modelo, asi que no cuesta tokens.
+   * Vacia cuando no hay turno en curso.
+   */
+  doing: string
   /** Cuando arranco el turno, en ms. */
   startedAt: number
   /** Cuando termino, en ms; 0 mientras corre. */

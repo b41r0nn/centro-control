@@ -11,7 +11,9 @@ import type {
 } from '../types'
 
 const PANE = 'centro-control'
-const SHAPE = 'cc-1'
+// Sube la etiqueta cuando cambian los campos de un valor guardado: asi el codigo
+// nuevo declina lo que escribio el viejo, que sobrevive a una recarga.
+const SHAPE = 'cc-2'
 const STORE_TOKENS = 'tokens'
 
 const EMPTY_TOKENS: CtlTokens = {
@@ -27,6 +29,7 @@ const EMPTY_ACTIVITY: CtlActivity = {
   isRunning: false,
   turnId: '',
   prompt: '',
+  doing: '',
   startedAt: 0,
   endedAt: 0,
   tools: 0,
@@ -211,12 +214,95 @@ const field = (e: unknown, key: string): string => {
   return typeof value === 'string' ? value : ''
 }
 
+/**
+ * El argumento que mejor dice sobre que actua una herramienta, por el nombre de
+ * su campo. El orden importa: `Grep` y `Glob` llevan `pattern` y tambien
+ * `path`, y lo que identifica la llamada es el patron, no la carpeta.
+ */
+const DETAIL_KEYS = [
+  'command',
+  'file_path',
+  'notebook_path',
+  'url',
+  'pattern',
+  'query',
+  'skill',
+  'path',
+  'description',
+  'subject',
+  'prompt',
+]
+
 const detailOf = (e: unknown): string => {
-  for (const key of ['command', 'file_path', 'notebook_path', 'path', 'url', 'description', 'pattern', 'prompt']) {
+  for (const key of DETAIL_KEYS) {
     const value = field(e, key)
     if (value.length > 0) return value.replace(/\s+/g, ' ').trim()
   }
   return ''
+}
+
+const shortPath = (path: string): string => /[^\\/]+$/.exec(path)?.[0] ?? path
+
+const hostOf = (url: string): string => /^https?:\/\/([^/]+)/i.exec(url)?.[1] ?? shortPath(url)
+
+const firstWords = (command: string, howMany: number): string =>
+  command.split(' ').filter(one => one.length > 0).slice(0, howMany).join(' ')
+
+/**
+ * Una frase corta de lo que esta pasando, derivada de la herramienta en curso y
+ * su argumento: "Editando register.tsx", "Corriendo npm test".
+ *
+ * Se arma aqui mismo, sin llamar al modelo, asi que no cuesta tokens ni demora
+ * la llamada que la provoca. Una herramienta que no este en la tabla cae al
+ * ultimo caso, que nombra la herramienta y su argumento tal cual.
+ */
+const explainOf = (tool: string, detail: string): string => {
+  if (tool === 'Bash' || tool === 'PowerShell') return `Corriendo ${firstWords(detail, 3)}`
+  if (tool === 'Read') return `Leyendo ${shortPath(detail)}`
+  if (tool === 'Edit' || tool === 'MultiEdit') return `Editando ${shortPath(detail)}`
+  if (tool === 'Write') return `Escribiendo ${shortPath(detail)}`
+  if (tool === 'NotebookEdit') return `Editando el notebook ${shortPath(detail)}`
+  if (tool === 'Grep') return `Buscando "${detail.slice(0, 32)}"`
+  if (tool === 'Glob') return `Listando archivos ${detail.slice(0, 32)}`
+  if (tool === 'WebSearch') return 'Buscando en la web'
+  if (tool === 'WebFetch') return `Leyendo ${hostOf(detail)}`
+  if (tool === 'Agent') return `Lanzando un agente: ${detail.slice(0, 40)}`
+  if (tool === 'SendMessage') return 'Hablando con otro agente'
+  if (tool === 'Skill') return `Cargando el skill ${detail.slice(0, 30)}`
+  if (tool === 'AskUserQuestion') return 'Esperando tu respuesta'
+  if (tool === 'ToolSearch') return 'Cargando herramientas'
+  if (tool === 'TodoWrite' || tool.startsWith('Task')) return 'Actualizando el plan'
+  if (tool.startsWith('mcp__')) {
+    const parts = tool.split('__')
+    return `Usando ${parts[1] ?? 'un servidor externo'}${parts[2] === undefined ? '' : `: ${parts[2]}`}`
+  }
+
+  return detail === '' ? `Usando ${tool}` : `${tool}: ${detail.slice(0, 40)}`
+}
+
+/** El `mode` del Spinner del motor, en palabras. */
+const MODE_WORDS: Record<string, string> = {
+  thinking: 'Pensando',
+  requesting: 'Consultando al modelo',
+  responding: 'Escribiendo la respuesta',
+  'tool-input': 'Preparando una herramienta',
+  'tool-use': 'Usando una herramienta',
+}
+
+/**
+ * Lo que un agente esta haciendo, en una frase: mientras piensa o responde lo
+ * dice su `mode`; mientras usa herramientas, la ultima que uso. Al terminar,
+ * vuelve a decir cual era su tarea.
+ */
+const agentDoing = (one: CtlAgent): string => {
+  if (isOver(one.status)) return one.description
+  const spoken = MODE_WORDS[one.mode] ?? ''
+  if (one.mode === 'thinking' || one.mode === 'requesting' || one.mode === 'responding') {
+    return spoken
+  }
+  if (one.lastTool !== '') return explainOf(one.lastTool, one.lastDetail)
+
+  return spoken === '' ? one.description : spoken
 }
 
 const dangerOf = (tool: string, e: unknown): string => {
@@ -273,11 +359,12 @@ const summaryText = (
         ? 'Sin turnos todavia en esta sesion.'
         : `Ultimo turno: ${since(act.startedAt, act.endedAt || now)}, ${act.tools} herramientas.`,
   )
+  if (act.doing !== '') lines.push(`Ahora: ${act.doing}`)
   if (act.prompt !== '') lines.push(`Pedido: ${act.prompt.slice(0, 160)}`)
   const live = list.filter(one => !isOver(one.status))
   if (list.length > 0) {
     lines.push(
-      `Agentes: ${list.length - live.length}/${list.length} terminados${live.length > 0 ? `; activos ${live.map(one => `${one.name || one.type} (${one.status})`).join(', ')}` : ''}.`,
+      `Agentes: ${list.length - live.length}/${list.length} terminados${live.length > 0 ? `; activos ${live.map(one => `${one.name || one.type} (${one.status}, ${agentDoing(one)})`).join(', ')}` : ''}.`,
     )
   }
   if (held !== null) {
@@ -299,7 +386,20 @@ const summaryText = (
 
 // ---------------------------------------------------------------- memoria del modulo
 
-const perAgent = new Map<string, { tools: number; lastTool: string; seenAt: number }>()
+const perAgent = new Map<
+  string,
+  { tools: number; lastTool: string; lastDetail: string; seenAt: number }
+>()
+/**
+ * Lo ultimo que supimos de cada agente, que sobrevive a que `$.agent.list()`
+ * suelte su fila: el motor la quita pocos segundos despues de que el agente
+ * termina, y sin esto la barra de progreso retrocederia al terminar el trabajo.
+ */
+const knownAgents = new Map<string, CtlAgent>()
+/** Agentes cuyo `turn.complete` oimos: sabemos que terminaron, no lo suponemos. */
+const endedAgents = new Map<string, number>()
+/** El `mode` del Spinner que el motor dibuja por agente, por su agentId. */
+const spinnerOf = new Map<string, string>()
 const warned = new Map<string, number>()
 let agentsKey = ''
 let isTicking = false
@@ -377,23 +477,57 @@ const warnOnLimits = async ($: EngineInterface, held: CtlUsage): Promise<void> =
 const pollAgents = async ($: EngineInterface): Promise<void> => {
   const now = await $.clock.now()
   const list = await $.agent.list()
-  const rows: CtlAgent[] = list.map(one => {
-    const seen = perAgent.get(one.id) ?? { tools: 0, lastTool: '', seenAt: now }
+  const listed = new Set(list.map(one => one.id))
+
+  for (const one of list) {
+    const seen = perAgent.get(one.id) ?? { tools: 0, lastTool: '', lastDetail: '', seenAt: now }
     if (!perAgent.has(one.id)) perAgent.set(one.id, seen)
-    return {
+    knownAgents.set(one.id, {
       id: one.id,
       name: one.name ?? '',
       type: one.type,
       status: one.status,
+      mode: spinnerOf.get(one.id) ?? '',
       description: one.description,
       tools: seen.tools,
       lastTool: seen.lastTool,
+      lastDetail: seen.lastDetail,
+      // `AgentInfo` no trae ningun timestamp, asi que esto es cuando LO VIMOS
+      // por primera vez, no cuando arranco de verdad.
       startedAt: seen.seenAt,
       endedAt: isOver(one.status) ? now : 0,
+    })
+  }
+
+  // Una fila que ya no esta en la lista se fue porque el agente termino. La
+  // damos por terminada solo si oimos su `turn.complete`; si no, no sabemos que
+  // le paso y la soltamos en vez de inventarle un final.
+  for (const [id, row] of knownAgents) {
+    if (listed.has(id)) continue
+    const endedAt = endedAgents.get(id)
+    if (endedAt === undefined && !isOver(row.status)) {
+      knownAgents.delete(id)
+      continue
     }
-  })
+    knownAgents.set(id, {
+      ...row,
+      status: isOver(row.status) ? row.status : 'completed',
+      mode: '',
+      endedAt: row.endedAt > 0 ? row.endedAt : (endedAt ?? now),
+    })
+  }
+
+  while (knownAgents.size > 40) {
+    const oldest = knownAgents.keys().next().value
+    if (oldest === undefined) break
+    knownAgents.delete(oldest)
+  }
+
+  const rows = [...knownAgents.values()]
   hasLiveAgents = rows.some(one => !isOver(one.status))
-  const key = rows.map(one => `${one.id}:${one.status}:${one.tools}:${one.lastTool}`).join('|')
+  const key = rows
+    .map(one => `${one.id}:${one.status}:${one.mode}:${one.tools}:${one.lastTool}:${one.lastDetail}`)
+    .join('|')
   if (key !== agentsKey) {
     agentsKey = key
     await update($, agents, () => rows)
@@ -519,6 +653,7 @@ export const register: Register = on => {
       isRunning: true,
       turnId: e.turnId,
       prompt: e.text.replace(/\s+/g, ' ').trim(),
+      doing: 'Pensando la respuesta',
       startedAt: now,
       endedAt: 0,
       tools: 0,
@@ -539,11 +674,16 @@ export const register: Register = on => {
           e.usage.cache_read_input_tokens +
           e.usage.cache_creation_input_tokens
     if (spent > 0) await addTokens($, spent)
+    const now = await $.clock.now()
     if (e.agentId === undefined) {
       isRunning = false
-      const now = await $.clock.now()
-      await update($, activity, held => ({ ...held, isRunning: false, endedAt: now }))
+      await update($, activity, held => ({ ...held, isRunning: false, doing: '', endedAt: now }))
       await refreshStatus($)
+    } else {
+      // El unico aviso fiable de que un agente termino: su fila se ira de
+      // `$.agent.list()` en segundos, y esto es lo que nos deja conservarla.
+      endedAgents.set(e.agentId, now)
+      spinnerOf.delete(e.agentId)
     }
 
     return next(e)
@@ -561,11 +701,17 @@ export const register: Register = on => {
         tools: held.tools + 1,
         lastTool: tool,
         lastDetail: detail,
+        doing: explainOf(tool, detail),
         lastAt: now,
       }))
     } else {
-      const seen = perAgent.get(e.agentId) ?? { tools: 0, lastTool: '', seenAt: now }
-      perAgent.set(e.agentId, { tools: seen.tools + 1, lastTool: tool, seenAt: seen.seenAt })
+      const seen = perAgent.get(e.agentId) ?? { tools: 0, lastTool: '', lastDetail: '', seenAt: now }
+      perAgent.set(e.agentId, {
+        tools: seen.tools + 1,
+        lastTool: tool,
+        lastDetail: detail,
+        seenAt: seen.seenAt,
+      })
     }
 
     if (why !== '') {
@@ -584,6 +730,17 @@ export const register: Register = on => {
 
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // El motor dibuja un Spinner por agente y su `requestId` es el agentId, con
+  // `mode` diciendo que esta haciendo ese turno. Solo lo anotamos y devolvemos
+  // `next(e)`, asi que el spinner del motor se dibuja igual que siempre.
+  // No se puede escribir `$.state` mientras se dibuja: lo recoge el latido.
+  on('ui.render', { component: 'Spinner' }, ($, e, next) => {
+    const mode = e.props.mode
+    if (typeof mode === 'string' && mode.length > 0) spinnerOf.set(e.requestId, mode)
+
+    return next(e)
+  })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -705,11 +862,17 @@ export const register: Register = on => {
           )}
           {act.turnId !== '' && <Text dimColor>{` · ${act.tools} herramientas`}</Text>}
         </Box>
+        {act.doing !== '' && (
+          <Box key="explicacion" paddingLeft={2}>
+            <Text color={ACCENT}>{`${MARK.row} `}</Text>
+            <Text color={ACCENT} bold>
+              {act.doing.slice(0, Math.max(10, room - 12))}
+            </Text>
+          </Box>
+        )}
         {act.lastTool !== '' && (
-          <Box key="ultima-herramienta" paddingLeft={2}>
-            <Text color={ACCENT_2}>{`${MARK.row} `}</Text>
-            <Text>{act.lastTool}</Text>
-            <Text dimColor>{`: ${act.lastDetail.slice(0, Math.max(10, room - 12))}`}</Text>
+          <Box key="ultima-herramienta" paddingLeft={4}>
+            <Text dimColor>{`${act.lastTool}: ${act.lastDetail.slice(0, Math.max(10, room - 14))}`}</Text>
           </Box>
         )}
         {act.prompt !== '' && (
@@ -733,26 +896,37 @@ export const register: Register = on => {
         )}
         {[...live, ...list.filter(one => isOver(one.status)).slice(-2)]
           .slice(0, roomForAgents)
-          .map(one => (
-            <Box key={one.id} paddingLeft={1}>
-              <Text
-                color={statusTone(one.status)}
-                bold
-                hover={{ scope: `agente-${one.id}`, underline: true }}
-              >
-                {`${ICON[one.status] ?? '·'} `}
-              </Text>
-              <Text hover={{ scope: `agente-${one.id}`, bold: true }}>
-                {(one.name || one.type).slice(0, 14).padEnd(15)}
-              </Text>
-              <Text color={statusTone(one.status)} hover={{ scope: `agente-${one.id}`, bold: true }}>
-                {one.status.padEnd(10)}
-              </Text>
-              <Text dimColor hover={{ scope: `agente-${one.id}`, dimColor: false }}>
-                {`${one.tools > 0 ? `${one.tools}t ` : ''}${one.description.slice(0, Math.max(6, room - 36))}`}
-              </Text>
-            </Box>
-          ))}
+          .map(one => {
+            // Mientras corre, la cola dice lo que esta haciendo; al terminar,
+            // vuelve a decir cual era su tarea.
+            const isLive = !isOver(one.status)
+            const tail = agentDoing(one)
+
+            return (
+              <Box key={one.id} paddingLeft={1}>
+                <Text
+                  color={statusTone(one.status)}
+                  bold
+                  hover={{ scope: `agente-${one.id}`, underline: true }}
+                >
+                  {`${ICON[one.status] ?? '·'} `}
+                </Text>
+                <Text hover={{ scope: `agente-${one.id}`, bold: true }}>
+                  {(one.name || one.type).slice(0, 14).padEnd(15)}
+                </Text>
+                <Text color={statusTone(one.status)} hover={{ scope: `agente-${one.id}`, bold: true }}>
+                  {one.status.padEnd(10)}
+                </Text>
+                <Text
+                  color={isLive ? ACCENT_2 : undefined}
+                  dimColor={!isLive}
+                  hover={{ scope: `agente-${one.id}`, dimColor: false }}
+                >
+                  {`${one.tools > 0 ? `${one.tools}t ` : ''}${tail.slice(0, Math.max(6, room - 36))}`}
+                </Text>
+              </Box>
+            )
+          })}
 
         {head('alertas', 'Alertas', warnings.length === 0 ? '' : `${warnings.length}`)}
         {warnings.length === 0 && (
